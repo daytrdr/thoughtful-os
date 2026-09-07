@@ -22,7 +22,9 @@
     "types:check": "pnpm run build",
     "types:scripts": "tsc -p scripts/tsconfig.json",
     "lint": "pnpm run lint:check && pnpm run types:scripts && pnpm run types:check",
-    "types:generate": "node scripts/generate-worker-types.ts"
+    "types:generate": "node scripts/generate-worker-types.ts",
+    "deploy:config": "node scripts/deploy/prod-config.ts",
+    "deploy:build": "node scripts/deploy/build.ts"
   },
   "devDependencies": {
     "@gadgets/scripts": "workspace:*",

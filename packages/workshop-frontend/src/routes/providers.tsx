@@ -6,8 +6,10 @@ import {
   AiChatAuthorInfo,
   AiGatewayInfo,
   AiModelProvider,
+  ChatGptSubscriptionInfo,
   SUGGESTED_MODELS,
 } from '@gadgets/workshop-shared/api'
+import { useChatGptSubscriptionLogin } from '../ServerConfigContext'
 import {
   Plus,
   Trash,
@@ -36,12 +38,14 @@ function ModelRow({
   model,
   isQuick,
   isBuiltIn,
+  isChatGpt,
   onDelete,
   onSetQuick,
 }: {
   model: AiChatAuthorInfo
   isQuick: boolean
   isBuiltIn: boolean
+  isChatGpt: boolean
   onDelete: () => void
   onSetQuick: () => void
 }) {
@@ -73,6 +77,11 @@ function ModelRow({
           {isBuiltIn && (
             <span className="shrink-0 rounded-full bg-kumo-tint px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-subtle">
               built-in
+            </span>
+          )}
+          {isChatGpt && (
+            <span className="shrink-0 rounded-full bg-kumo-tint px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-subtle" title="Billed to your ChatGPT plan">
+              chatgpt
             </span>
           )}
           {isQuick && (
@@ -135,26 +144,32 @@ function ProvidersPage() {
 
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
+  const chatGptEnabled = useChatGptSubscriptionLogin()
   const [models, setModels] = useState<AiChatAuthorInfo[]>([])
   const [quickModel, setQuickModel] = useState<string | null>(null)
   const [aiConfig, setAiConfig] = useState<AiGatewayInfo | null>(null)
+  const [chatGpt, setChatGpt] = useState<ChatGptSubscriptionInfo | null>(null)
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)
-  const [sheetOpen, setSheetOpen] = useState(false)
+  // Which panel the add dialog opens on; null when closed.
+  const [sheet, setSheet] = useState<'model' | 'chatgpt' | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [disconnecting, setDisconnecting] = useState(false)
 
   const fetchAll = async () => {
     setLoadError(false)
     try {
-      const [modelList, qm, cfg] = await Promise.all([
+      const [modelList, qm, cfg, plan] = await Promise.all([
         authenticatedApi.listModels(),
         authenticatedApi.getQuickModel(),
         authenticatedApi.getAiConfig(),
+        chatGptEnabled ? authenticatedApi.getChatGptSubscription() : Promise.resolve(null),
       ])
       setModels(modelList)
       setQuickModel(qm)
       setAiConfig(cfg)
+      setChatGpt(plan)
     } catch (err) {
       console.error('Failed to load providers:', err)
       setLoadError(true)
@@ -163,7 +178,22 @@ function ProvidersPage() {
     }
   }
 
-  useEffect(() => { fetchAll() }, [authenticatedApi])
+  useEffect(() => { fetchAll() }, [authenticatedApi, chatGptEnabled])
+
+  const handleDisconnectChatGpt = async () => {
+    const count = chatGpt?.modelIds.length ?? 0
+    if (!confirm(`Disconnect ChatGPT?${count ? ` This deletes the ${count} model${count === 1 ? '' : 's'} that run on it.` : ''}`)) return
+    setDisconnecting(true)
+    try {
+      await authenticatedApi.disconnectChatGpt()
+      await fetchAll()
+    } catch (err) {
+      console.error('Failed to disconnect ChatGPT:', err)
+      toasts.add({ title: 'Failed to disconnect ChatGPT', variant: 'error' })
+    } finally {
+      setDisconnecting(false)
+    }
+  }
 
   const gatewayMode = aiConfig?.enabled === true
 
@@ -221,7 +251,7 @@ function ProvidersPage() {
             Configure the AI models available to your workspaces.
           </p>
         </div>
-        <button type="button" onClick={() => setSheetOpen(true)} className={`${PRIMARY_BTN} h-11 justify-center text-[14px] sm:h-9 sm:text-[13px]`}>
+        <button type="button" onClick={() => setSheet('model')} className={`${PRIMARY_BTN} h-11 justify-center text-[14px] sm:h-9 sm:text-[13px]`}>
           <Plus size={14} weight="bold" />
           Add provider
         </button>
@@ -245,8 +275,39 @@ function ProvidersPage() {
 
       <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1 pb-16">
         {/* Notices */}
-        {(gatewayMode || (!gatewayMode && models.length > 0)) && !loading && !loadError && (
+        {(gatewayMode || chatGptEnabled || (!gatewayMode && models.length > 0)) && !loading && !loadError && (
           <div className="flex flex-col gap-2.5 px-3 pb-2">
+            {chatGptEnabled && (
+              <Notice>
+                <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded bg-kumo-brand text-[10px] font-bold text-white">C</span>
+                <span className="min-w-0 flex-1">
+                  {chatGpt ? (
+                    <>
+                      <strong className="font-medium text-kumo-default">ChatGPT plan connected.</strong>{' '}
+                      Account <span className="font-mono text-[12px]">{chatGpt.accountId}</span>, since{' '}
+                      {new Date(chatGpt.connectedAt).toLocaleDateString()}. The access token renews on its own
+                      (current one until {new Date(chatGpt.expiresAt).toLocaleString()}).{' '}
+                      {chatGpt.modelIds.length === 0 ? 'No models use it yet.' : `${chatGpt.modelIds.length} model${chatGpt.modelIds.length === 1 ? '' : 's'} run on it.`}
+                    </>
+                  ) : (
+                    <>
+                      <strong className="font-medium text-kumo-default">ChatGPT plan:</strong> sign in once
+                      with a short code and add GPT models billed to your plan instead of an API key.
+                    </>
+                  )}
+                </span>
+                <span className="flex shrink-0 gap-3 text-[13px]">
+                  <button type="button" onClick={() => setSheet('chatgpt')} className="cursor-pointer font-medium text-kumo-brand hover:underline">
+                    {chatGpt ? 'Add model' : 'Sign in'}
+                  </button>
+                  {chatGpt && (
+                    <button type="button" onClick={handleDisconnectChatGpt} disabled={disconnecting} className="cursor-pointer text-kumo-subtle hover:text-kumo-danger hover:underline disabled:opacity-50">
+                      Disconnect
+                    </button>
+                  )}
+                </span>
+              </Notice>
+            )}
             {gatewayMode && (
               <Notice>
                 <Lightning size={15} className="mt-px shrink-0 text-kumo-brand" />
@@ -298,7 +359,7 @@ function ProvidersPage() {
                 Add a provider to start building workspaces with AI.
               </p>
             </div>
-            <button type="button" onClick={() => setSheetOpen(true)} className={PRIMARY_BTN}>
+            <button type="button" onClick={() => setSheet('model')} className={PRIMARY_BTN}>
               <Plus size={14} weight="bold" />
               Add your first provider
             </button>
@@ -315,6 +376,7 @@ function ProvidersPage() {
                 model={model}
                 isQuick={quickModel === model.id}
                 isBuiltIn={isBuiltIn(model.id)}
+                isChatGpt={chatGpt?.modelIds.includes(model.id) ?? false}
                 onDelete={() => handleDelete(model)}
                 onSetQuick={() => handleSetQuick(model.id)}
               />
@@ -325,14 +387,16 @@ function ProvidersPage() {
 
       {/* Add model dialog */}
       <AddModelModal
-        visible={sheetOpen}
-        onCancel={() => setSheetOpen(false)}
+        visible={sheet !== null}
+        onCancel={() => { setSheet(null); fetchAll() }}
         onSuccess={() => {
-          setSheetOpen(false)
+          setSheet(null)
           fetchAll()
         }}
         authenticatedApi={authenticatedApi}
         aiConfig={aiConfig}
+        initialView={sheet ?? 'model'}
+        chatGptSubscription={chatGpt}
       />
     </div>
   )

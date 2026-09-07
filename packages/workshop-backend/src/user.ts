@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, SUBSCRIPTION_PROVIDERS, type AiModelOAuthCredential, type ChatGptDeviceLogin, type ChatGptDeviceLoginStatus, type ChatGptSubscriptionInfo, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -7,6 +7,9 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import { createWorkshopLogger } from "./observability";
 import { getAiGatewayConfig } from "./ai-gateway.js";
+import { CHATGPT_REFRESH_SKEW_MS, DEVICE_CODE_TIMEOUT_MS, DEVICE_VERIFICATION_URI,
+  SLOW_DOWN_INCREMENT_SECONDS, exchangeDeviceCode, isChatGptSubscriptionLoginEnabled,
+  pollDeviceAuth, refreshChatGptCredential, startDeviceAuth } from "./chatgpt-oauth.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
@@ -70,6 +73,20 @@ export type UserAiModelRecord = {
   profile: AiChatAuthorInfo;
   config: AiModelConfig;
 }
+
+// The user's ChatGPT grant (see chatgpt-oauth.ts). One per user: every openai-codex model runs on it.
+type StoredChatGptCredential = AiModelOAuthCredential & { connectedAt: number };
+
+// A device-code sign-in in progress. `nextPollAt` enforces the provider's polling interval on the
+// server so an eager client cannot get the deployment rate-limited.
+type ChatGptDeviceLoginState = {
+  deviceAuthId: string;
+  userCode: string;
+  intervalSeconds: number;
+  startedAt: number;
+  expiresAt: number;
+  nextPollAt: number;
+};
 
 export type UserChatContext = {
   profile: AiChatAuthorInfo;
@@ -199,6 +216,11 @@ function makeUserStorage(storage: DurableObjectStorage) {
       },
       quickModel: <string | null>null,
       preferredModel: <string | null>null,
+
+      // "Sign in with ChatGPT" (ENABLE_CHATGPT_SUBSCRIPTION_LOGIN): the grant the user's
+      // openai-codex models run on, and the device-code sign-in in progress, if any.
+      chatGptCredential: <StoredChatGptCredential | null>null,
+      chatGptDeviceLogin: <ChatGptDeviceLoginState | null>null,
       onboardingCompleted: false,
 
       // Set once the user's pre-existing workspaces have been asked to populate the outputs index
@@ -549,7 +571,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
     let gwConfig = getAiGatewayConfig(this.env);
-    if (gwConfig && !gwConfig.providers.has(config.provider)) {
+    if (SUBSCRIPTION_PROVIDERS.has(config.provider)) {
+      // A subscription model runs on the stored grant, never on a token in the config, and no AI
+      // Gateway can serve it, so gateway mode neither restricts nor routes it.
+      this.#requireChatGptLogin();
+      if (!this.storage.chatGptCredential.get()) {
+        throw new Error("Sign in with ChatGPT before adding one of its models.");
+      }
+      config = { provider: config.provider, model: config.model, apiToken: "" };
+    } else if (gwConfig && !gwConfig.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
 
@@ -569,6 +599,123 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     this.storage.aiModels.delete(id);
+  }
+
+  // ---- "Sign in with ChatGPT" (device code) --------------------------------------------------
+
+  #requireChatGptLogin(): void {
+    if (!isChatGptSubscriptionLoginEnabled(this.env)) {
+      throw new Error("Sign-in with ChatGPT is not enabled on this deployment " +
+          "(ENABLE_CHATGPT_SUBSCRIPTION_LOGIN).");
+    }
+  }
+
+  async startChatGptDeviceLogin(): Promise<ChatGptDeviceLogin> {
+    this.#requireChatGptLogin();
+    const device = await startDeviceAuth();
+    const now = Date.now();
+    const state: ChatGptDeviceLoginState = {
+      deviceAuthId: device.deviceAuthId,
+      userCode: device.userCode,
+      intervalSeconds: device.intervalSeconds,
+      startedAt: now,
+      expiresAt: now + DEVICE_CODE_TIMEOUT_MS,
+      nextPollAt: now + device.intervalSeconds * 1000,
+    };
+    this.storage.chatGptDeviceLogin.put(state);
+    return {
+      userCode: state.userCode,
+      verificationUri: DEVICE_VERIFICATION_URI,
+      expiresAt: state.expiresAt,
+      intervalSeconds: state.intervalSeconds,
+    };
+  }
+
+  async pollChatGptDeviceLogin(): Promise<ChatGptDeviceLoginStatus> {
+    this.#requireChatGptLogin();
+    const state = this.storage.chatGptDeviceLogin.get();
+    if (!state) return { status: "failed", message: "No sign-in is in progress. Start again." };
+    const now = Date.now();
+    if (now >= state.expiresAt) {
+      this.storage.chatGptDeviceLogin.put(null);
+      return { status: "failed", message: "The code expired before it was approved. Start again." };
+    }
+    // The provider's interval is a floor: a client polling faster is answered from here.
+    if (now < state.nextPollAt) return { status: "pending" };
+    const result = await pollDeviceAuth(state);
+    if (result.status === "pending" || result.status === "slow_down") {
+      const intervalSeconds = state.intervalSeconds +
+          (result.status === "slow_down" ? SLOW_DOWN_INCREMENT_SECONDS : 0);
+      this.storage.chatGptDeviceLogin.put(
+          { ...state, intervalSeconds, nextPollAt: now + intervalSeconds * 1000 });
+      return { status: "pending" };
+    }
+    this.storage.chatGptDeviceLogin.put(null);
+    if (result.status === "failed") return { status: "failed", message: result.message };
+    let credential: AiModelOAuthCredential;
+    try {
+      credential = await exchangeDeviceCode(result.authorizationCode, result.codeVerifier);
+    } catch (err) {
+      return { status: "failed", message: err instanceof Error ? err.message : String(err) };
+    }
+    this.storage.chatGptCredential.put({ ...credential, connectedAt: now });
+    this.#chatGptRefresh = undefined;
+    return { status: "complete", accountId: credential.accountId, expiresAt: credential.expiresAt };
+  }
+
+  async getChatGptSubscription(): Promise<ChatGptSubscriptionInfo | null> {
+    const stored = this.storage.chatGptCredential.get();
+    if (!stored) return null;
+    const modelIds = [...this.storage.aiModels.list()]
+        .filter(record => SUBSCRIPTION_PROVIDERS.has(record.config.provider))
+        .map(record => record.profile.id);
+    return {
+      accountId: stored.accountId,
+      expiresAt: stored.expiresAt,
+      connectedAt: stored.connectedAt,
+      modelIds,
+    };
+  }
+
+  async disconnectChatGpt(): Promise<void> {
+    this.storage.chatGptCredential.put(null);
+    this.storage.chatGptDeviceLogin.put(null);
+    this.#chatGptRefresh = undefined;
+    // Collect first: deleting while the storage cursor is open would skip entries.
+    const doomed = [...this.storage.aiModels.list()]
+        .filter(record => SUBSCRIPTION_PROVIDERS.has(record.config.provider));
+    for (const record of doomed) this.storage.aiModels.delete(record.profile.id);
+  }
+
+  // The token a chat is handed must outlive the run, so it is refreshed once less than an hour
+  // remains. Concurrent turns share one refresh: the token endpoint rotates the refresh token,
+  // and two parallel refreshes would strand whichever finished second.
+  #chatGptRefresh: Promise<StoredChatGptCredential> | undefined;
+
+  async #freshChatGptCredential(): Promise<StoredChatGptCredential> {
+    const stored = this.storage.chatGptCredential.get();
+    if (!stored) {
+      throw new Error("ChatGPT is not connected. Sign in with ChatGPT under AI providers.");
+    }
+    if (stored.expiresAt - Date.now() > CHATGPT_REFRESH_SKEW_MS) return stored;
+    if (!this.#chatGptRefresh) {
+      this.#chatGptRefresh = (async () => {
+        try {
+          const fresh = await refreshChatGptCredential(stored.refreshToken);
+          const record = { ...fresh, connectedAt: stored.connectedAt };
+          this.storage.chatGptCredential.put(record);
+          return record;
+        } finally {
+          this.#chatGptRefresh = undefined;
+        }
+      })();
+    }
+    return this.#chatGptRefresh;
+  }
+
+  async #withChatGptCredential(config: AiModelConfig): Promise<AiModelConfig> {
+    const { connectedAt: _connectedAt, ...credential } = await this.#freshChatGptCredential();
+    return { ...config, credential };
   }
 
   async setQuickModel(id: string | null): Promise<void> {
@@ -692,7 +839,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets
-   * via retryOnDoReset, so it must stay free of writes and side effects. */
+   * via retryOnDoReset, so it must stay free of writes and side effects. The one exception is a
+   * subscription model's access token, refreshed here when it is about to expire: the refresh is
+   * coalesced and idempotent, so a retried call only rejoins it. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
     let gwConfig = getAiGatewayConfig(this.env);
 
@@ -722,6 +871,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           result.quickModel = quickModel.config;
         }
       }
+    }
+
+    // A subscription model leaves here with the user's grant attached, so the chat's model handle
+    // is self-contained (see AiModelConfig.credential).
+    if (result.aiModel && SUBSCRIPTION_PROVIDERS.has(result.aiModel.config.provider)) {
+      result.aiModel = {
+        profile: result.aiModel.profile,
+        config: await this.#withChatGptCredential(result.aiModel.config),
+      };
+    }
+    if (result.quickModel && SUBSCRIPTION_PROVIDERS.has(result.quickModel.provider)) {
+      result.quickModel = await this.#withChatGptCredential(result.quickModel);
     }
     return result;
   }

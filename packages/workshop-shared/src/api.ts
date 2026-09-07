@@ -409,6 +409,27 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   getAiConfig(): Promise<AiGatewayInfo>;
 
+  // --- Optional "Sign in with ChatGPT" (only when ENABLE_CHATGPT_SUBSCRIPTION_LOGIN is on) ---
+
+  /**
+   * Begin a device-code sign-in to the user's ChatGPT plan. Show the returned code and link, then
+   * call `pollChatGptDeviceLogin()` every `intervalSeconds` until it is no longer pending. Starting
+   * again abandons the previous attempt. Throws when the deployment has not enabled the feature.
+   */
+  startChatGptDeviceLogin(): Promise<ChatGptDeviceLogin>;
+
+  /**
+   * Check the sign-in started by `startChatGptDeviceLogin()`. On completion the grant is stored
+   * for the user and any `openai-codex` model they add runs on it; a failure ends the attempt.
+   */
+  pollChatGptDeviceLogin(): Promise<ChatGptDeviceLoginStatus>;
+
+  /** The connected ChatGPT plan, or null when the user has not signed in (or disconnected). */
+  getChatGptSubscription(): Promise<ChatGptSubscriptionInfo | null>;
+
+  /** Forget the ChatGPT grant and delete every model that ran on it. */
+  disconnectChatGpt(): Promise<void>;
+
   /** Resolve UI feature flags for the authenticated user. */
   getUiFeatureFlags(): Promise<UiFeatureFlags>;
 
@@ -1072,6 +1093,12 @@ export type ServerConfig = {
   cloudflareLimitsEnabled: boolean;
 
   /**
+   * Whether "Sign in with ChatGPT" is offered under AI providers (ENABLE_CHATGPT_SUBSCRIPTION_LOGIN).
+   * Off by default; see docs/ai-subscriptions.md for what it implies.
+   */
+  chatGptSubscriptionLogin: boolean;
+
+  /**
    * Whether new account signups are allowed (admin-configurable, default true). The signup page
    * hides the create-account form when false.
    */
@@ -1137,7 +1164,45 @@ export type CloudflareAccountOption = {
 };
 
 /** Supported AI providers. */
-export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
+export type AiModelProvider =
+    "openai" | "anthropic" | "google" | "cloudflare" | "ollama" | "openai-codex";
+
+/**
+ * Providers billed to a personal subscription the user signs into (device-code OAuth) rather than
+ * to an API key: never routed through an AI Gateway, never offered in the API-key picker, and
+ * never bound to gadgets. See docs/ai-subscriptions.md.
+ */
+export const SUBSCRIPTION_PROVIDERS: ReadonlySet<string> =
+    new Set<AiModelProvider>(["openai-codex"]);
+
+/** One step of a device-code sign-in. Returned by `AuthenticatedApi.startChatGptDeviceLogin()`. */
+export type ChatGptDeviceLogin = {
+  /** The short code the user types at `verificationUri`. */
+  userCode: string;
+  verificationUri: string;
+  /** Epoch ms after which the code no longer works. */
+  expiresAt: number;
+  /** How often the client should call `pollChatGptDeviceLogin()`, in seconds. */
+  intervalSeconds: number;
+};
+
+/** Outcome of one `pollChatGptDeviceLogin()` call. */
+export type ChatGptDeviceLoginStatus =
+  | { status: "pending" }
+  | { status: "complete"; accountId: string; expiresAt: number }
+  | { status: "failed"; message: string };
+
+/** The user's connected ChatGPT plan. Returned by `AuthenticatedApi.getChatGptSubscription()`. */
+export type ChatGptSubscriptionInfo = {
+  /** OpenAI's account identifier for the plan (not an email). */
+  accountId: string;
+  /** Epoch ms when the current access token expires; the server renews it before use. */
+  expiresAt: number;
+  /** Epoch ms of the sign-in. */
+  connectedAt: number;
+  /** IDs of the user's configured models that run on this plan. */
+  modelIds: string[];
+};
 
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {
@@ -1145,6 +1210,17 @@ export type AiGatewayInfo = {
   enabledProviders: AiModelProvider[];
 } | {
   enabled: false;
+};
+
+/** A refreshable OAuth grant for a subscription-billed provider. A secret: never sent to a client. */
+export type AiModelOAuthCredential = {
+  kind: "oauth";
+  accessToken: string;
+  refreshToken: string;
+  /** Epoch ms after which `accessToken` is rejected. */
+  expiresAt: number;
+  /** The provider's account identifier (for ChatGPT, the `chatgpt_account_id` JWT claim). */
+  accountId: string;
 };
 
 /** Configuration specifying how to connect to an AI model provider. */
@@ -1170,6 +1246,15 @@ export type AiModelConfig = {
    * alternative provider that provides a compatible API.
    */
   apiUrl?: string;
+
+  /**
+   * OAuth grant for a subscription provider (`SUBSCRIPTION_PROVIDERS`), used instead of
+   * `apiToken` (which is then ""). Stored once per user, not per model: the user's Durable Object
+   * attaches it when a chat resolves the model, refreshing the access token first, so a config
+   * copy carries a snapshot good for at least an hour rather than a live handle. Ignored (and
+   * stripped) on `addModel()`.
+   */
+  credential?: AiModelOAuthCredential;
 };
 
 /**
@@ -1215,6 +1300,16 @@ const SUGGESTED_MODEL_CATALOG = {
   },
   "google": {
     "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576},
+  },
+  // ChatGPT plan (device-code sign-in), served by chatgpt.com/backend-api. Windows follow pi's
+  // openai-codex catalog, which differ from the API-key models of the same name above.
+  "openai-codex": {
+    "gpt-5.6-sol": {name: "GPT 5.6 Sol (ChatGPT)", contextWindow: 272000, outputLimit: 128000},
+    "gpt-5.6-luna": {name: "GPT 5.6 Luna (ChatGPT)", contextWindow: 272000, outputLimit: 128000},
+    "gpt-5.6-terra": {name: "GPT 5.6 Terra (ChatGPT)", contextWindow: 272000, outputLimit: 128000},
+    "gpt-5.3-codex-spark": {
+      name: "GPT 5.3 Codex Spark (ChatGPT)", contextWindow: 128000, outputLimit: 128000,
+    },
   },
   "ollama": {
   },

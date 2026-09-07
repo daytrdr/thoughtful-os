@@ -807,6 +807,8 @@ function seedBoard(now) {
   };
 }
 
+// The board wraps a screen's <body> in `.screen-root` itself: a screen must not add its own
+// wrapper with that class, or padding and min-height apply twice and the page is clipped.
 const WELCOME_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><style>
   .screen-root { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #0f1115; background: #ffffff; width: 1200px; min-height: 760px; box-sizing: border-box; padding: 72px 96px; }
@@ -820,7 +822,7 @@ const WELCOME_HTML = `<!doctype html>
   kbd { display: inline-block; border: 1px solid #e5e5e8; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-family: inherit; background: #fff; color: #191f76; font-weight: 600; }
   .wordmark { position: absolute; right: 96px; top: 72px; font-weight: 600; letter-spacing: -0.03em; font-size: 18px; color: #0f1115; }
   .wordmark i { display: inline-block; width: 6px; height: 6px; border-radius: 999px; background: #191f76; margin-left: 5px; vertical-align: middle; }
-</style></head><body><div class="screen-root" style="position:relative">
+</style></head><body>
   <div class="wordmark">thoughtful agency<i></i></div>
   <p class="eyebrow">Design review</p>
   <h1>Pin a note where it belongs. Let the agent do the rework.</h1>
@@ -830,7 +832,7 @@ const WELCOME_HTML = `<!doctype html>
     <div class="card"><b><kbd>E</kbd> Edit</b><span>Edit copy directly on screens and move or restyle blocks on boards. Every change syncs live for the whole team.</span></div>
     <div class="card"><b><kbd>A</kbd> Ask the agent</b><span>Flag a thread, then tell the chat “apply the open comments on frame 2”. The agent reads the thread, edits the frame and replies.</span></div>
   </div>
-</div></body></html>`;
+</body></html>`;
 
 // ---------------------------------------------------------------- export --
 

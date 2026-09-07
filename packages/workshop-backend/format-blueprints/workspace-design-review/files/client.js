@@ -375,6 +375,11 @@ const STYLE = `
   @keyframes dr-pop { from { transform: scale(.4); } to { transform: scale(1); } }
   @keyframes dr-fade { from { opacity: 0; } to { opacity: 1; } }
   .dr-cursors { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+  .dr-overflow { position: absolute; left: 0; right: 0; bottom: 0; height: calc(88px * var(--inv, 1)); display: none; align-items: flex-end;
+    justify-content: center; padding-bottom: calc(12px * var(--inv, 1)); pointer-events: none;
+    background: linear-gradient(rgba(255,255,255,0), rgba(255,255,255,.94) 70%); }
+  .dr-frame.overflowing .dr-overflow { display: flex; }
+  .dr-overflow .dr-pill { pointer-events: auto; transform: scale(var(--inv, 1)); transform-origin: center bottom; box-shadow: 0 2px 10px rgba(15,17,21,.12); }
   .dr-cursor { position: absolute; transform: translate(-2px, -2px) scale(var(--inv, 1)); transform-origin: 2px 2px; transition: left .12s linear, top .12s linear; }
   .dr-cursor .tag { position: absolute; left: 14px; top: 12px; font-size: 11px; font-weight: 600; color: var(--white); padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
   .dr-composer { position: absolute; z-index: 30; width: 300px; background: var(--white); border: 1px solid var(--line); border-radius: 18px;
@@ -745,7 +750,12 @@ function ensureFrameNode(frame) {
   const catcher = el("div", { class: "dr-catcher", hidden: true });
   const pins = el("div", { class: "dr-pins" });
   const cursors = el("div", { class: "dr-cursors" });
-  body.append(content, catcher, pins, cursors);
+  // Shown when a screen's page continues below the frame's declared height (see measureScreen).
+  const overflow = el("div", { class: "dr-overflow" }, [
+    el("button", { class: "dr-pill secondary", "data-fit-height-strip": "1", title: "Grow the frame to the page's full height",
+      onclick: e => { e.stopPropagation(); fitScreenHeight(frame.id); } }, [fitIcon(), "Continues below · Fit height"]),
+  ]);
+  body.append(content, catcher, overflow, pins, cursors);
   root.append(label, body);
   root.addEventListener("pointerdown", e => {
     if (e.button !== 0) return;
@@ -765,7 +775,7 @@ function ensureFrameNode(frame) {
   R.world.appendChild(root);
   n = { root, label, body, content, catcher, pins, cursors, renderedVersion: null, renderedMode: null, renderedSel: null,
     renderedEditing: false, rendered: { src: undefined, html: undefined, blocks: undefined, width: 0, height: 0 }, pendingHtml: undefined,
-    renderedSerialized: null };
+    renderedSerialized: null, contentHeight: 0 };
   frameNodes.set(frame.id, n);
   return n;
 }
@@ -811,6 +821,9 @@ function renderFrame(frame, force = false) {
         if (isEditingHtml) enableScreenEditing(frame, n, root);
         // Canonical form of what is on screen, so "did anyone type?" is a plain comparison.
         n.renderedSerialized = isEditingHtml ? serializeScreen(n.content) : null;
+        measureScreen(frame.id, root);
+        // Inline images decode after the first layout; a load anywhere in the screen re-measures.
+        root.addEventListener("load", () => measureScreen(frame.id, root), true);
       } else {
         renderBoard(frame, n.content);
       }
@@ -828,6 +841,52 @@ function renderFrame(frame, force = false) {
   renderCursors(frame);
 }
 
+/* Screens are clipped to their declared height, like frames in Figma, so a fold stays where the
+ * designer put it and pin geometry is identical on every machine. When the page continues below
+ * the fold, the frame says so and offers to grow to the measured height; the inspector has the
+ * same button. Nothing grows on its own: the persisted height is what every viewer lays out. */
+function measureScreen(frameId, root) {
+  const n = frameNodes.get(frameId);
+  const frame = frameById(frameId);
+  if (!n || !frame || frame.kind !== "html" || !root.isConnected) return;
+  n.contentHeight = Math.ceil(root.offsetHeight || 0);
+  syncOverflowUi(frameId);
+}
+function screenOverflows(frame) {
+  const n = frameNodes.get(frame.id);
+  return !!n && frame.kind === "html" && n.contentHeight > frame.height + 2;
+}
+function syncOverflowUi(frameId) {
+  const frame = frameById(frameId);
+  const n = frameNodes.get(frameId);
+  if (!frame || !n) return;
+  n.root.classList.toggle("overflowing", screenOverflows(frame));
+  if (frameId !== selectedFrameId || !R.inspector) return;
+  // Update the inspector's button in place; a full re-render would drop a teammate's caret.
+  const btn = R.inspector.querySelector("[data-fit-height]");
+  if (btn) applyFitButtonState(btn, frame);
+}
+function applyFitButtonState(btn, frame) {
+  const n = frameNodes.get(frame.id);
+  const over = screenOverflows(frame);
+  btn.disabled = !over;
+  btn.title = over ? `Grow the frame to the page's full height (${n.contentHeight}px)` : "The page fits inside the frame";
+  btn.querySelector("[data-fit-label]").textContent = over ? `Fit height · ${n.contentHeight}px` : "Height fits";
+}
+function fitIcon() {
+  const icon = svgIcon(ICON.chevron, 13);
+  icon.setAttribute("style", "transform:rotate(90deg)");
+  return icon;
+}
+async function fitScreenHeight(frameId) {
+  const n = frameNodes.get(frameId);
+  const frame = frameById(frameId);
+  if (!n || !frame || !screenOverflows(frame)) return;
+  const height = clamp(n.contentHeight, 40, 20000);
+  try { await gadget.updateFrame(frameId, { height }); toast(`"${frame.title}" now shows the whole page.`); }
+  catch { toast("Could not resize the frame.", "error"); }
+}
+
 function enableScreenEditing(frame, n, root) {
   root.setAttribute("contenteditable", "true");
   root.spellcheck = false;
@@ -835,7 +894,7 @@ function enableScreenEditing(frame, n, root) {
     clearTimeout(pendingHtmlSaves.get(frame.id));
     pendingHtmlSaves.set(frame.id, setTimeout(() => flushScreenEdit(frame.id), 900));
   };
-  root.addEventListener("input", schedule);
+  root.addEventListener("input", () => { schedule(); measureScreen(frame.id, root); });
   root.addEventListener("blur", () => flushScreenEdit(frame.id));
   root.addEventListener("keydown", e => { e.stopPropagation(); if (e.key === "Escape") root.blur(); });
   root.addEventListener("pointerdown", e => e.stopPropagation());
@@ -1189,12 +1248,22 @@ function selectComment(id, { scroll = false } = {}) {
 
 /* ----------------------- Composer (new comment) -------------------------- */
 function openComposer(frame, nx, ny) {
+  // A note typed at one spot survives a click at another: the text moves along with the pin.
+  const draft = composer ? { body: composer.ta.value, askAgent: composer.ask.checked } : null;
   closeComposer();
-  selectedFrameId = frame.id;
-  selectedCommentId = null;
+  if (selectedFrameId !== frame.id || selectedBlockId || selectedCommentId) {
+    // The composer's frame is the selected frame everywhere (list, canvas, inspector, threads)
+    // from the first click, not only once the note posts.
+    selectedFrameId = frame.id;
+    selectedBlockId = null;
+    selectedCommentId = null;
+    renderAllFrames(); renderFrameList(); renderInspector(); renderThreads();
+  }
   const node = el("div", { class: "dr-composer", onpointerdown: e => e.stopPropagation() });
   const ta = el("textarea", { class: "dr-input", placeholder: "Leave a note for the team…", rows: 3 });
   const ask = el("input", { type: "checkbox" });
+  if (draft?.body) ta.value = draft.body;
+  if (draft?.askAgent) ask.checked = true;
   const post = el("button", { class: "dr-pill", text: "Post" });
   const cancel = el("button", { class: "dr-pill ghost", text: "Cancel" });
   node.append(
@@ -1219,11 +1288,12 @@ function openComposer(frame, nx, ny) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
     if (e.key === "Escape") { e.preventDefault(); closeComposer(); }
   });
-  composer = { frameId: frame.id, x: nx, y: ny, node };
+  composer = { frameId: frame.id, x: nx, y: ny, node, ta, ask };
   R.canvas.appendChild(node);
   positionComposer();
   renderPins(frame);
   ta.focus();
+  if (draft?.body) ta.setSelectionRange(ta.value.length, ta.value.length);
 }
 function positionComposer() {
   if (!composer) return;
@@ -1291,8 +1361,10 @@ function attachKeyboard() {
         }
         break;
       case "Tab":
-        // Tab cycles open threads.
+        // Tab walks the open threads once one is selected or while commenting. Otherwise focus
+        // leaves the board the normal way, so keyboard users are never trapped in it.
         {
+          if (!selectedCommentId && mode !== "comment") return;
           const open = board.comments.filter(c => c.status === "open");
           if (!open.length) return;
           e.preventDefault();
@@ -1574,6 +1646,9 @@ function renderInspector(options = {}) {
   if (f.kind === "html") {
     box.appendChild(el("div", { style: { fontSize: "12px", color: T.inkSoft, margin: "8px 0 4px", lineHeight: "1.5" } },
       [mode === "edit" ? "Click into the screen to edit copy in place. Changes save as you type." : "Press E to edit copy directly on this screen, or ask the agent to revise it."]));
+    const fit = el("button", { class: "dr-pill secondary", "data-fit-height": "1", onclick: () => fitScreenHeight(f.id) }, [fitIcon(), el("span", { "data-fit-label": "1" })]);
+    applyFitButtonState(fit, f);
+    box.appendChild(el("div", { class: "dr-row", style: { margin: "6px 0" } }, [fit]));
     if (lostScreenEdits.has(f.id)) {
       box.appendChild(el("div", { class: "dr-row", style: { margin: "6px 0" } }, [
         el("button", { class: "dr-pill secondary", "data-restore-edit": "1", title: "Re-apply the text you typed before a teammate's change replaced this screen", onclick: async () => {

@@ -28,11 +28,11 @@ fonts). Buttons are pills, cards are `rounded-2xl`, the wordmark is lowercase wi
 | Key | Action |
 | --- | --- |
 | `V` / `C` / `E` | Select, Comment, Edit mode |
-| click (Comment mode) | Drop a numbered pin on a frame and write the note; `Enter` posts, `Esc` cancels |
+| click (Comment mode) | Drop a numbered pin on a frame and write the note; `Enter` posts, `Esc` cancels. Clicking somewhere else while writing moves the pin and keeps the text |
 | `E` then click text | Edit copy in place (screens) or drag / resize / edit blocks (boards) |
 | wheel, ⌘/Ctrl+wheel | Pan, zoom; drag empty canvas or hold `Space` to pan |
 | `0` / `1` / `+` / `-` | Fit board, 100%, zoom in, zoom out |
-| `Tab` / `⇧Tab` | Next / previous open thread |
+| `Tab` / `⇧Tab` | Next / previous open thread, once a thread is selected or in Comment mode; otherwise focus leaves the board as usual |
 | ⌘Z / ⇧⌘Z | Undo / redo (shared, server-side, in memory) |
 | `Delete`, arrows | Delete or nudge the selected block in Edit mode |
 
@@ -70,7 +70,15 @@ Their `props` are documented by the defaults in `COMPONENTS` in `client.js`.
 HTML screens are sanitized before rendering: scripts, frames, external `src`/`href`, `on*`
 handlers and `@import`/`url()` to anything but `data:image/` are removed, and `body`/`html`
 selectors are rewritten to `.screen-root`. Write screens as one file with inline CSS and no
-external assets; the Welcome frame in `server.js` (`WELCOME_HTML`) is a good template.
+external assets; the Welcome frame in `server.js` (`WELCOME_HTML`) is a good template. The board
+wraps the body in `.screen-root` itself, so do not add a wrapper with that class (padding and
+min-height would apply twice).
+
+Screens are clipped to their declared `height`, like frames in Figma, so pins land in the same
+place on every machine. When a page continues below the fold, the frame shows **Continues below ·
+Fit height** (the inspector has the same button); one click persists the measured height for
+everyone. When adding a screen the reviewer should see in full, set `height` to the page's full
+height rather than a viewport height.
 
 ## Working with the board from the agent
 

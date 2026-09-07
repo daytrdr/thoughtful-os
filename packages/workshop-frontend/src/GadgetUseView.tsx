@@ -10,7 +10,7 @@ import {
   WorkpieceId,
   WorkpieceSummary,
 } from '@gadgets/workshop-shared/api'
-import GadgetUI from './GadgetUI'
+import GadgetUI, { type GadgetViewer } from './GadgetUI'
 import UserMenu from './components/UserMenu'
 import { GadgetPresence } from './components/GadgetPresence'
 import TopBarNotice from './TopBarNotice'
@@ -39,6 +39,8 @@ type Props = {
   metadata: GadgetMetadata
   authenticatedApi: RpcStub<AuthenticatedApi>
   currentUserId: string | null
+  // Passed through to the gadget iframe as its display-only `gadgetViewer`.
+  viewer?: GadgetViewer | null
 }
 
 // Matches the top bar height used by the full editor (and the home page header).
@@ -53,6 +55,7 @@ export default function GadgetUseView({
   metadata,
   authenticatedApi,
   currentUserId,
+  viewer = null,
 }: Props) {
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-kumo-base">
@@ -152,6 +155,7 @@ export default function GadgetUseView({
             gadget={gadget}
             height="100%"
             isVisible={true}
+            viewer={viewer}
           />
         ) : (
           <div className="flex h-full items-center justify-center px-6 text-center">

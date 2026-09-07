@@ -59,6 +59,24 @@ try {
   Window.prototype.open = blockedOpen;
 } catch {}
 
+// The workshop shell posts the signed-in viewer ({ id, name } or null) right after the handshake.
+// It is a display label for gadgets that attribute edits or comments to people; it carries no
+// authority, and gadget servers must not treat it as identity. Gadgets read gadgetViewer directly
+// or await gadgetViewerReady when they need it before their first render.
+let gadgetViewerResolve;
+globalThis.gadgetViewer = undefined;
+globalThis.gadgetViewerReady = new Promise((resolve) => { gadgetViewerResolve = resolve; });
+window.addEventListener('message', (event) => {
+  if (event.source !== window.parent || !event.data || event.data.type !== 'viewer') return;
+  const viewer = event.data.viewer;
+  globalThis.gadgetViewer = (viewer && typeof viewer === 'object')
+    ? { id: typeof viewer.id === 'string' ? viewer.id : null, name: typeof viewer.name === 'string' ? viewer.name : '' }
+    : null;
+  gadgetViewerResolve(globalThis.gadgetViewer);
+  // The shell may post again once a late user lookup resolves; gadgets that care listen for this.
+  window.dispatchEvent(new CustomEvent('gadgetviewer', { detail: globalThis.gadgetViewer }));
+});
+
 // Forward Escape key presses to the parent frame. The sandboxed iframe captures keydown events
 // when it has focus, so the parent never sees them. The workshop UI uses Escape to exit fullscreen
 // gadget mode, so forward it explicitly.
@@ -125,7 +143,14 @@ interface GadgetUIProps {
   // Fires when the user presses Escape while the gadget iframe has focus. Sandboxed iframes
   // capture keydown events, so we forward Escape explicitly from inside the iframe.
   onIframeEscape?: () => void
+  // The signed-in user, posted into the iframe as `gadgetViewer` so collaborative gadgets can label
+  // comments, cursors and edits with a name. Display only: the gadget's server never sees it as
+  // authority, and a gadget must work without it.
+  viewer?: GadgetViewer | null
 }
+
+/** What a gadget UI learns about the person looking at it. A label, not a credential. */
+export type GadgetViewer = { id: string; name: string }
 
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
 // budget: the point at which we conclude the reply is never coming.
@@ -136,7 +161,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, viewer = null }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -163,6 +188,26 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const rpcSessionRef = useRef<any>(null)
   // Keep latest callbacks in refs so the message-handler effect never tears down the RPC session.
   const onIframeEscapeRef = useRef(onIframeEscape)
+  // Latest viewer for the handshake handler (registered once) and whether a frame has shaken hands
+  // yet, so a viewer that resolves late (whoami racing the UI bundle) still reaches the gadget.
+  const viewerRef = useRef<GadgetViewer | null>(viewer)
+  viewerRef.current = viewer
+  const handshakeDoneRef = useRef(false)
+  // While the viewer is still unknown at handshake time we hold off posting for a moment, so a
+  // gadget awaiting gadgetViewerReady gets a name rather than a guest; this timer posts null if
+  // the lookup has not resolved by then.
+  const viewerGraceRef = useRef<number | null>(null)
+  const postViewer = (target: Window | null | undefined) => {
+    if (!target) return
+    if (viewerGraceRef.current !== null) { clearTimeout(viewerGraceRef.current); viewerGraceRef.current = null }
+    // The frame is an opaque origin, so '*' is the only deliverable target origin; the payload is
+    // the viewer's own display name and id, nothing secret.
+    target.postMessage({ type: 'viewer', viewer: viewerRef.current ?? null }, '*')
+  }
+  useEffect(() => {
+    if (handshakeDoneRef.current && viewer) postViewer(iframeRef.current?.contentWindow)
+  }, [viewer])
+  useEffect(() => () => { if (viewerGraceRef.current !== null) clearTimeout(viewerGraceRef.current) }, [])
   const onConsoleLogRef = useRef(onConsoleLog)
   onIframeEscapeRef.current = onIframeEscape
   onConsoleLogRef.current = onConsoleLog
@@ -339,6 +384,18 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
       if (event.data === 'handshake' && event.ports && event.ports[0]) {
         const port = event.ports[0]
+        // Tell the gadget who is looking before its first RPC can possibly resolve. If the user
+        // lookup is still pending, give it a moment rather than announcing a guest.
+        handshakeDoneRef.current = true
+        if (viewerRef.current) {
+          postViewer(event.source as Window)
+        } else {
+          const source = event.source as Window
+          viewerGraceRef.current = window.setTimeout(() => {
+            viewerGraceRef.current = null
+            if (!cancelled && source === iframeRef.current?.contentWindow) postViewer(source)
+          }, 1500)
+        }
         let gadgetStub: any = null
         resetConnection(new Error('Gadget iframe reloaded.'))
         const generation = connectionGenerationRef.current

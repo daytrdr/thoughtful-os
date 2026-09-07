@@ -1,0 +1,22 @@
+{
+  "$comment": "output.id is generic (\"design\") because it is the grouping key on the Outputs page; a later prototype or moodboard format can declare the same id and sit beside this one.",
+  "blueprintId": "format.design-review",
+  "title": "Design Review",
+  "description": "Use to review designs together: drop in Figma exports or agent-built screens, pin numbered notes exactly where they belong, edit copy in place, and hand open threads to the agent to apply.",
+  "output": {
+    "id": "design",
+    "noun": "Design",
+    "plural": "Designs",
+    "icon": "appWindow"
+  },
+  "author": {
+    "type": "user",
+    "name": "Thoughtful Agency",
+    "id": "studio@thoughtful.agency"
+  },
+  "revision": 1,
+  "created": "2026-09-06T00:00:00.000Z",
+  "version": 1,
+  "lastUpdated": "2026-09-06T00:00:00.000Z",
+  "bindings": {}
+}

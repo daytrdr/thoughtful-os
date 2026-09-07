@@ -428,7 +428,7 @@ export default function GadgetEditor() {
   const params = useParams({ strict: false }) as { id?: string }
   const id = params.id
   const navigate = useNavigate()
-  const { authenticatedApi } = useAuthenticatedApi()
+  const { authenticatedApi, currentUser } = useAuthenticatedApi()
 
   const { chat: chatParam, w: workpieceParam } = useSearch({ strict: false }) as
     { chat?: number; w?: number }
@@ -1374,6 +1374,7 @@ export default function GadgetEditor() {
         metadata={metadata}
         authenticatedApi={authenticatedApi}
         currentUserId={userInfo?.id ?? null}
+        viewer={currentUser ?? userInfo}
       />
     )
   }
@@ -1859,6 +1860,7 @@ export default function GadgetEditor() {
                   chatId={previewChatId}
                   onConsoleLog={handleClientConsoleLog}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
+                  viewer={currentUser ?? userInfo}
                 />
               ) : !previewMode && (
                 <NoGadgetPlaceholder height="100%" />
@@ -1950,6 +1952,7 @@ export default function GadgetEditor() {
               isVisible={true}
               chatId={previewChatId}
               onConsoleLog={handleClientConsoleLog}
+              viewer={currentUser ?? userInfo}
             />
           )}
         </div>

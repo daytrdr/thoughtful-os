@@ -1,0 +1,54 @@
+// Production settings for deploying this fork through Cloudflare Workers Builds.
+//
+// `scripts/deploy/prod-config.ts` reads this file together with each package's `wrangler.jsonc`
+// and writes a `wrangler.prod.jsonc` (gitignored) beside it. The dev configs stay the source of
+// truth for migrations, compatibility flags and bindings; this file only adds what production
+// needs: names, the public origin, storage ids, admins and feature flags. See docs/deployment.md.
+//
+// Every `<placeholder>` must be replaced before the first build; the generator refuses to run
+// while one remains.
+{
+  // The router's origin. OAuth redirect URIs and absolute links are built from it, so it must be
+  // exactly the hostname the router answers on: `https://<router name>.<subdomain>.workers.dev`
+  // for a workers.dev route, or `https://<customDomain>` for a custom domain.
+  "publicBaseUrl": "https://thoughtful-router.daytrdr.workers.dev",
+
+  // Exactly one of `workersDev: true` or `customDomain: "<hostname>"`. A custom domain needs its
+  // zone on the same Cloudflare account; the router deploy registers it.
+  "route": { "workersDev": true },
+
+  // Prepended to every package name to form the Worker name: `thoughtful-router`,
+  // `thoughtful-workshop-backend`, `thoughtful-gatekeeper-mcp`. Each Workers Builds project must
+  // be created under exactly that name.
+  "namePrefix": "thoughtful-",
+
+  // Gatekeeper Workers to deploy and bind, by short name (`mcp` is packages/gatekeeper-mcp).
+  // `mcp` carries the Figma MCP bridge. Add `google` here (and under auth.gatekeepers) to offer
+  // "Continue with Google".
+  "gatekeepers": ["mcp"],
+
+  // Accounts that get the Admin menu. With password sign-in these are usernames (lowercase
+  // letters, digits and underscores); with gatekeeper sign-in they are the verified emails.
+  "admins": ["<admin-username>"],
+
+  // Sign-in. Empty `gatekeepers` means the app's own username/password accounts, which is what
+  // this deployment uses while the studio is being tested. `disablePasswordAuth` only takes
+  // effect when at least one auth gatekeeper is listed.
+  "auth": { "gatekeepers": [], "disablePasswordAuth": false },
+
+  // Storage the backend binds. Create the two KV namespaces and the R2 bucket once in the
+  // Cloudflare dashboard and paste the ids here.
+  "resources": {
+    "blueprintsKvNamespaceId": "<blueprints-kv-namespace-id>",
+    "avatarsKvNamespaceId": "<avatars-kv-namespace-id>",
+    "blueprintContentBucket": "thoughtful-blueprint-content"
+    // Gatekeepers with KV of their own (gatekeeper-context) take their ids here, keyed by binding:
+    // "gatekeeperKvNamespaceIds": { "CONTEXT_COLLECTIONS": "<id>" }
+  },
+
+  // Feature flags that ride as plain vars on the backend.
+  "features": {
+    // "Sign in with ChatGPT" under AI providers (docs/ai-subscriptions.md). Off by default.
+    "chatGptSubscriptionLogin": false
+  }
+}

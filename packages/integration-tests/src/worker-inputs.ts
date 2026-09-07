@@ -76,8 +76,10 @@ const WORKER_INPUTS: WorkerInput[] = [
     path: "packages/integration-tests/fixtures/gatekeeper-test",
     excludeDirs: [".wrangler", "node_modules"],
   },
-  // Extended by every package above, so it controls their emit and their type checking.
+  // Extended by every package above, so they control their emit and their type checking: the
+  // root config carries the shared options in tsconfig.base.json down to the packages.
   { kind: "file", path: "tsconfig.json" },
+  { kind: "file", path: "tsconfig.base.json" },
   { kind: "file", path: "pnpm-lock.yaml" },
 ];
 

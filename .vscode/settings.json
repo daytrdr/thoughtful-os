@@ -1,0 +1,10 @@
+{
+  // The workspace `tsc` is TypeScript 7 (tsgo), which the `singleThreaded` option in
+  // tsconfig.base.json belongs to. VS Code's bundled TypeScript (6.0.3 in 1.136) flags it as
+  // unknown; the TypeScript Go extension (recommended in extensions.json) understands it and
+  // matches what `pnpm build` runs. Reload the window after installing the extension.
+  "js/ts.experimental.useTsgo": true,
+  // Upstream code spells Tailwind classes in their pre-v4 form (`flex-shrink-0`, `!h-9`); the
+  // canonical-form suggestion would touch dozens of upstream files for no behavior change.
+  "tailwindCSS.lint.suggestCanonicalClasses": "ignore"
+}

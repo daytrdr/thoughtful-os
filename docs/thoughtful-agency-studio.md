@@ -20,9 +20,11 @@ operating guide for the plan in `plans/` and the Design Review format shipped in
   Pro/Max subscriptions cannot be used here: Anthropic's consumer terms allow subscription OAuth
   only in Anthropic's own products and apps built on the Claude Agent SDK, which cannot run inside
   a Worker. Keep the Max subscription for Claude Code itself.
-- "Sign in with ChatGPT" (device-code login, billed to the person's ChatGPT plan) is technically
-  possible and deliberately not built yet; OpenAI has neither blocked nor sanctioned third-party
-  use. The design is recorded in the plan for a later pass.
+- "Sign in with ChatGPT" (device-code login, billed to the person's ChatGPT plan) is built and
+  off by default: set `ENABLE_CHATGPT_SUBSCRIPTION_LOGIN=true` on the backend Worker to offer it
+  under AI providers. OpenAI has neither blocked nor sanctioned third-party clients on a plan, so
+  turning it on is a team decision; [ai-subscriptions.md](ai-subscriptions.md) has the flow and
+  its limits (chat-only, no gadget bindings).
 - Optional cost visibility: set `CF_AI_GATEWAY` and `CF_AI_GATEWAY_PROVIDERS=anthropic,openai` with
   company keys so every chat is logged and priced per workspace.
 

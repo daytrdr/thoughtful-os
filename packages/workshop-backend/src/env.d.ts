@@ -74,6 +74,10 @@ declare global {
       // Enables the Cloudflare free-tier limits + top-up flow when set to "true".
       ENABLE_CLOUDFLARE_LIMITS?: string;
 
+      // Set to "true" to offer "Sign in with ChatGPT" under AI providers: models billed to the
+      // user's own ChatGPT plan through OpenAI's device-code OAuth (docs/ai-subscriptions.md).
+      ENABLE_CHATGPT_SUBSCRIPTION_LOGIN?: string;
+
       // Public base URL of the deployment.
       PUBLIC_BASE_URL?: string;
 

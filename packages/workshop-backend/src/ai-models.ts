@@ -8,18 +8,22 @@ import { stream as anthropicMessagesStream } from "@earendil-works/pi-ai/api/ant
 import { stream as googleGenerativeAiStream } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
 import { stream as openaiResponsesStream } from "@earendil-works/pi-ai/api/openai-responses";
+import { stream as openaiCodexResponsesStream } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { CLOUDFLARE_WORKERS_AI_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
+import { OPENAI_CODEX_MODELS } from "@earendil-works/pi-ai/providers/openai-codex.models";
 import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
-import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
+import { AiChatAuthorInfo, AiModelConfig, SUBSCRIPTION_PROVIDERS, SUGGESTED_MODELS,
+  WORKERS_AI_OUTPUT_LIMIT }
   from "@gadgets/workshop-shared/api";
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
+import { CHATGPT_API_BASE_URL } from "./chatgpt-oauth.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -119,6 +123,7 @@ function buildMetadata(initiator: AiChatAuthorInfo, context?: GatewayMetadataCon
 const API_STREAMS: Record<string, StreamFunction<Api, SimpleStreamOptions>> = {
   "anthropic-messages": anthropicMessagesStream as StreamFunction<Api, SimpleStreamOptions>,
   "openai-responses": openaiResponsesStream as StreamFunction<Api, SimpleStreamOptions>,
+  "openai-codex-responses": openaiCodexResponsesStream as StreamFunction<Api, SimpleStreamOptions>,
   "openai-completions": openaiCompletionsStream as StreamFunction<Api, SimpleStreamOptions>,
   "google-generative-ai": googleGenerativeAiStream as StreamFunction<Api, SimpleStreamOptions>,
 };
@@ -131,6 +136,7 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
   switch (provider) {
     case "anthropic": return (ANTHROPIC_MODELS as Record<string, Model<Api>>)[modelId];
     case "openai": return (OPENAI_MODELS as Record<string, Model<Api>>)[modelId];
+    case "openai-codex": return (OPENAI_CODEX_MODELS as Record<string, Model<Api>>)[modelId];
     case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
     case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
     case "ollama": return undefined;
@@ -297,7 +303,11 @@ function makeHandle(args: HandleArgs): ModelHandle {
   const apiExtras: Record<string, unknown> =
       args.model.api === "anthropic-messages"
           ? (anthropicCompat?.forceAdaptiveThinking === true ? { thinkingEnabled: true } : {}) :
-      args.model.api === "openai-responses" ? { reasoningEffort: "medium" } : {};
+      args.model.api === "openai-responses" ? { reasoningEffort: "medium" } :
+      // ChatGPT's backend speaks the Responses API over SSE or WebSocket. Workers have no outbound
+      // WebSocket constructor, so ask for SSE rather than paying a failed upgrade on every turn.
+      args.model.api === "openai-codex-responses"
+          ? { reasoningEffort: "medium", transport: "sse" } : {};
 
   const handle: ModelHandle = {
     model: args.model,
@@ -356,6 +366,12 @@ function makeHandle(args: HandleArgs): ModelHandle {
 export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
                          options: ModelRoutingOptions = {}): ModelHandle {
+  // A subscription provider is billed to the user's own sign-in and no AI Gateway can serve it,
+  // so it goes direct whatever the deployment's routing is.
+  if (SUBSCRIPTION_PROVIDERS.has(config.provider)) {
+    return getModelDirect(config, options.sessionAffinity);
+  }
+
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
@@ -639,6 +655,33 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
         apiKey: config.apiToken,
         sessionAffinity,
       });
+    case "openai-codex": {
+      // ChatGPT plan: the sign-in's access token is the API key. pi reads the account id from the
+      // token's JWT claims and sets the chatgpt-account-id header itself; the user's Durable
+      // Object attached a token with at least an hour left (see UserDurableObject.getChatContext).
+      const credential = config.credential;
+      if (credential?.kind !== "oauth" || !credential.accessToken) {
+        throw new Error(
+            "This ChatGPT model has no sign-in attached. Reconnect ChatGPT under AI providers.");
+      }
+      return makeHandle({
+        model: {
+          id: config.model,
+          name: catalog?.name ?? config.model,
+          api: "openai-codex-responses",
+          provider: "openai-codex",
+          baseUrl: CHATGPT_API_BASE_URL,
+          reasoning: catalog?.reasoning ?? true,
+          input: catalog?.input ?? ["text", "image"],
+          cost: catalog?.cost ?? ZERO_COST,
+          ...window,
+          thinkingLevelMap: catalog?.thinkingLevelMap,
+          compat: catalog?.compat,
+        },
+        apiKey: credential.accessToken,
+        sessionAffinity,
+      });
+    }
     default:
       config.provider satisfies never;
       throw new Error(`Unknown provider "${config.provider}".`);

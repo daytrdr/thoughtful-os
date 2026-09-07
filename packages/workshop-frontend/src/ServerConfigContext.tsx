@@ -35,3 +35,8 @@ export function useAuthVendors(): AuthVendorInfo[] {
 export function useCloudflareLimitsEnabled(): boolean {
   return useContext(ServerConfigContext)?.cloudflareLimitsEnabled ?? false
 }
+
+/** Convenience: whether "Sign in with ChatGPT" is offered under AI providers. */
+export function useChatGptSubscriptionLogin(): boolean {
+  return useContext(ServerConfigContext)?.chatGptSubscriptionLogin ?? false
+}

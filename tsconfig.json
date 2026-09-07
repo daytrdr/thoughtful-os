@@ -1,23 +1,8 @@
+// The root config only carries the shared options in tsconfig.base.json down to the packages.
+// The `extends` + empty `files` pair is what keeps both TypeScript 6 (VS Code's bundled
+// version) and TypeScript 7 (the workspace `tsc`) from reporting "no inputs were found" for
+// a config that is never compiled on its own.
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ESNext"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
-    "allowJs": true,
-    "strict": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    // tsgo's default parallel checkers each keep separate type caches, so every
-    // checker re-derives capnweb's recursive type graphs; single-threaded is
-    // both faster and smaller here. Measurements in AGENTS.md.
-    "singleThreaded": true
-  },
-  "include": [],
-  "exclude": ["node_modules", "dist"]
+  "extends": "./tsconfig.base.json",
+  "files": []
 }

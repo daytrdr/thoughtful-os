@@ -32,6 +32,22 @@ const WORKERS_AI_CONFIG: AiModelConfig = {
   apiToken: "ignored-in-gateway-mode",
 };
 
+// A ChatGPT access token: a JWT whose payload carries OpenAI's account claim, which pi reads to
+// set the chatgpt-account-id header.
+const b64url = (s: string) => btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const CHATGPT_JWT = `${b64url('{"alg":"none"}')}.${
+    b64url(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct_42" } }))}.sig`;
+
+const CHATGPT_CONFIG: AiModelConfig = {
+  provider: "openai-codex",
+  model: "gpt-5.6-sol",
+  apiToken: "",
+  credential: {
+    kind: "oauth", accessToken: CHATGPT_JWT, refreshToken: "refresh", accountId: "acct_42",
+    expiresAt: Date.now() + 3600_000,
+  },
+};
+
 function env(overrides: Partial<Cloudflare.Env> = {}): Cloudflare.Env {
   return {
     CF_AI_GATEWAY: "platform-gateway",
@@ -450,6 +466,29 @@ describe("getModel direct routing (no gateway)", () => {
     expect(() => getModel(env({ CF_AI_GATEWAY: undefined }),
         { ...WORKERS_AI_CONFIG, ...overrides }, INITIATOR))
         .toThrow("This Workers AI model has no Cloudflare credentials.");
+  });
+
+  it("sends a ChatGPT-plan model straight to chatgpt.com with its OAuth token", async () => {
+    // Gateway mode is on in env(): a subscription provider ignores it, since no gateway can
+    // serve the plan, and never gets a gateway log route or metadata.
+    const handle = getModel(env(), CHATGPT_CONFIG, INITIATOR,
+        { metadata: { source: "chat", chatId: 7 } });
+    expect(handle.model.api).toBe("openai-codex-responses");
+    expect(handle.model.baseUrl).toBe("https://chatgpt.com/backend-api");
+    expect(handle.model.contextWindow).toBe(272000);
+    expect(handle.aiGatewayLogRoute).toBeUndefined();
+
+    const request = await captureRequest(handle);
+    expect(request.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(request.headers.get("authorization")).toBe(`Bearer ${CHATGPT_JWT}`);
+    expect(request.headers.get("chatgpt-account-id")).toBe("acct_42");
+    expect(request.headers.get("cf-aig-metadata")).toBeNull();
+  }, 15000);
+
+  it("refuses a ChatGPT-plan model whose config carries no sign-in", () => {
+    expect(() => getModel(env({ CF_AI_GATEWAY: undefined }),
+        { provider: "openai-codex", model: "gpt-5.6-sol", apiToken: "" }, INITIATOR))
+        .toThrow("no sign-in attached");
   });
 
   it("appends /v1 to an Ollama server base URL", () => {

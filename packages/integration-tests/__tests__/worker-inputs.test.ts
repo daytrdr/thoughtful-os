@@ -13,10 +13,11 @@ const inWorkspace = (path: string) => resolve(WORKSPACE_DIR, path).replaceAll("\
 
 it.each([
   // Not source, but they decide what wrangler loads: `typed-storage` is the one package that emits,
-  // and these three control that emit.
+  // and these four control that emit.
   "packages/typed-storage/tsconfig.json",
   "packages/typed-storage/package.json",
   "tsconfig.json",
+  "tsconfig.base.json",
   "packages/workshop-backend/src/server.ts",
   "packages/workshop-backend/wrangler.jsonc",
   "packages/workshop-shared/src/api.ts",
@@ -64,6 +65,7 @@ it("watches a root covering every entry in the table", () => {
     "packages/integration-tests/fixtures",
     "packages/integration-tests/fixtures/gatekeeper-test",
     "tsconfig.json",
+    "tsconfig.base.json",
     "pnpm-lock.yaml",
   ].map(inWorkspace);
 

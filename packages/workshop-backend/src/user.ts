@@ -86,6 +86,15 @@ type ChatGptDeviceLoginState = {
   startedAt: number;
   expiresAt: number;
   nextPollAt: number;
+  // Set while the approved code is being exchanged for tokens, so a poll landing during that
+  // exchange waits instead of asking the provider for the same code twice.
+  exchanging?: boolean;
+};
+
+// Answer for a poll whose attempt was cancelled or replaced while it awaited the provider.
+const SUPERSEDED_LOGIN: ChatGptDeviceLoginStatus = {
+  status: "failed",
+  message: "This sign-in was cancelled or replaced by a newer one. Use the newest code.",
 };
 
 export type UserChatContext = {
@@ -640,9 +649,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.storage.chatGptDeviceLogin.put(null);
       return { status: "failed", message: "The code expired before it was approved. Start again." };
     }
+    if (state.exchanging) return { status: "pending" };
     // The provider's interval is a floor: a client polling faster is answered from here.
     if (now < state.nextPollAt) return { status: "pending" };
     const result = await pollDeviceAuth(state);
+    // The input gate does not hold across that fetch: a disconnect or a fresh sign-in may have
+    // replaced this attempt meanwhile, and a stale continuation must not write over it.
+    if (!this.#isCurrentChatGptLogin(state)) return SUPERSEDED_LOGIN;
     if (result.status === "pending" || result.status === "slow_down") {
       const intervalSeconds = state.intervalSeconds +
           (result.status === "slow_down" ? SLOW_DOWN_INCREMENT_SECONDS : 0);
@@ -650,17 +663,30 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           { ...state, intervalSeconds, nextPollAt: now + intervalSeconds * 1000 });
       return { status: "pending" };
     }
-    this.storage.chatGptDeviceLogin.put(null);
-    if (result.status === "failed") return { status: "failed", message: result.message };
+    if (result.status === "failed") {
+      this.storage.chatGptDeviceLogin.put(null);
+      return { status: "failed", message: result.message };
+    }
+    this.storage.chatGptDeviceLogin.put({ ...state, exchanging: true });
     let credential: AiModelOAuthCredential;
     try {
       credential = await exchangeDeviceCode(result.authorizationCode, result.codeVerifier);
     } catch (err) {
+      if (!this.#isCurrentChatGptLogin(state)) return SUPERSEDED_LOGIN;
+      this.storage.chatGptDeviceLogin.put(null);
       return { status: "failed", message: err instanceof Error ? err.message : String(err) };
     }
+    if (!this.#isCurrentChatGptLogin(state)) return SUPERSEDED_LOGIN;
+    this.storage.chatGptDeviceLogin.put(null);
     this.storage.chatGptCredential.put({ ...credential, connectedAt: now });
     this.#chatGptRefresh = undefined;
     return { status: "complete", accountId: credential.accountId, expiresAt: credential.expiresAt };
+  }
+
+  // Whether `state` is still the sign-in on record. Each attempt has its own provider-issued
+  // device id, so a newer attempt or a disconnect is detected by that alone.
+  #isCurrentChatGptLogin(state: ChatGptDeviceLoginState): boolean {
+    return this.storage.chatGptDeviceLogin.get()?.deviceAuthId === state.deviceAuthId;
   }
 
   async getChatGptSubscription(): Promise<ChatGptSubscriptionInfo | null> {
@@ -699,16 +725,29 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     if (stored.expiresAt - Date.now() > CHATGPT_REFRESH_SKEW_MS) return stored;
     if (!this.#chatGptRefresh) {
-      this.#chatGptRefresh = (async () => {
+      let refresh: Promise<StoredChatGptCredential> | undefined;
+      refresh = (async () => {
         try {
           const fresh = await refreshChatGptCredential(stored.refreshToken);
+          // The input gate does not hold across that fetch. If the grant was disconnected
+          // meanwhile the refreshed tokens are dropped rather than resurrected; if it was
+          // replaced by a new sign-in, that newer grant wins.
+          const current = this.storage.chatGptCredential.get();
+          if (!current) {
+            throw new Error("ChatGPT was disconnected while its sign-in was being refreshed. " +
+                "Sign in with ChatGPT again under AI providers.");
+          }
+          if (current.refreshToken !== stored.refreshToken) return current;
           const record = { ...fresh, connectedAt: stored.connectedAt };
           this.storage.chatGptCredential.put(record);
           return record;
         } finally {
-          this.#chatGptRefresh = undefined;
+          // Only clear our own slot: a reconnect during the fetch may have reset it already, and
+          // a refresh started after that must not be dropped by this stale continuation.
+          if (this.#chatGptRefresh === refresh) this.#chatGptRefresh = undefined;
         }
       })();
+      this.#chatGptRefresh = refresh;
     }
     return this.#chatGptRefresh;
   }

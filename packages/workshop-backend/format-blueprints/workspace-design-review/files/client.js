@@ -1911,67 +1911,21 @@ async function addBoard() {
 
 /* ======================= Realtime ======================================== */
 
+/* Board events must land on top of the snapshot they follow, never under it. Today that order is
+ * guaranteed twice over (the server registers the callback and reads the snapshot under one input
+ * gate, and every RPC message is its own task on both hops), but the client should not depend on
+ * it: anything a subscriber hears before its snapshot is adopted is queued and replayed after. */
 class Subscriber extends RpcTarget {
+  pending = [];   // events received before adopt(); null once live
   change(event) {
-    if (event.undo) { canUndo = !!event.undo.canUndo; canRedo = !!event.undo.canRedo; updateUndoButtons(); }
-    switch (event.type) {
-      case "reset":
-        board = event.board; selectedFrameId = null; selectedCommentId = null; selectedBlockId = null;
-        renderEverything(); fitToView(board.frames); return;
-      case "meta":
-        board.meta = event.meta; renderHeaderMeta(); return;
-      case "order": {
-        const byId = new Map(board.frames.map(f => [f.id, f]));
-        board.frames = event.order.map(id => byId.get(id)).filter(Boolean);
-        renderAllFrames(); renderFrameList(); return;
-      }
-      case "frame": {
-        let frame;
-        if (event.frame) {
-          // A created frame arrives whole.
-          frame = event.frame;
-          const i = board.frames.findIndex(f => f.id === frame.id);
-          if (i >= 0) board.frames[i] = frame; else board.frames.push(frame);
-        } else {
-          // An update arrives as a patch; untouched content keeps its identity so nothing re-decodes.
-          const i = board.frames.findIndex(f => f.id === event.id);
-          if (i < 0) {
-            gadget.getFrame(event.id).then(f => {
-              if (!f || board.frames.some(x => x.id === f.id)) return;
-              board.frames.push(f); renderFrame(f); renderFrameList();
-            }).catch(() => {});
-            return;
-          }
-          frame = { ...board.frames[i], ...(event.patch || {}) };
-          for (const k of event.unset || []) delete frame[k];
-          board.frames[i] = frame;
-        }
-        renderFrame(frame); renderFrameList();
-        if (frame.id === selectedFrameId) renderInspector();
-        if (composer && composer.frameId === frame.id) positionComposer();
-        return;
-      }
-      case "frameRemoved":
-        board.frames = board.frames.filter(f => f.id !== event.id);
-        board.comments = board.comments.filter(c => c.frameId !== event.id);
-        if (selectedFrameId === event.id) { selectedFrameId = null; selectedBlockId = null; }
-        if (composer?.frameId === event.id) closeComposer();
-        renderAllFrames(); renderFrameList(); renderInspector(); renderThreads(); return;
-      case "comment": {
-        const i = board.comments.findIndex(c => c.id === event.comment.id);
-        if (i >= 0) board.comments[i] = event.comment; else board.comments.push(event.comment);
-        const f = frameById(event.comment.frameId);
-        if (f) renderPins(f);
-        // A moved comment leaves pins behind on its old frame; cheap to refresh them all.
-        for (const other of board.frames) if (other !== f) renderPins(other);
-        renderThreads(); renderFrameList(); return;
-      }
-      case "commentRemoved":
-        board.comments = board.comments.filter(c => c.id !== event.id);
-        if (selectedCommentId === event.id) selectedCommentId = null;
-        for (const f of board.frames) renderPins(f);
-        renderThreads(); renderFrameList(); return;
-    }
+    if (this.pending) { this.pending.push(event); return; }
+    applyBoardEvent(event);
+  }
+  adopt(snapshot) {
+    adoptBoard(snapshot);
+    const queued = this.pending;
+    this.pending = null;
+    for (const event of queued) applyBoardEvent(event);
   }
   presence(event) {
     if (event.clientId === clientId) return;
@@ -1990,10 +1944,82 @@ class Subscriber extends RpcTarget {
   }
 }
 
+function applyBoardEvent(event) {
+  if (event.undo) { canUndo = !!event.undo.canUndo; canRedo = !!event.undo.canRedo; updateUndoButtons(); }
+  switch (event.type) {
+    case "reset":
+      board = event.board; selectedFrameId = null; selectedCommentId = null; selectedBlockId = null;
+      renderEverything(); fitToView(board.frames); return;
+    case "meta":
+      board.meta = event.meta; renderHeaderMeta(); return;
+    case "order": {
+      const byId = new Map(board.frames.map(f => [f.id, f]));
+      board.frames = event.order.map(id => byId.get(id)).filter(Boolean);
+      renderAllFrames(); renderFrameList(); return;
+    }
+    case "frame": {
+      let frame;
+      if (event.frame) {
+        // A created frame arrives whole.
+        frame = event.frame;
+        const i = board.frames.findIndex(f => f.id === frame.id);
+        if (i >= 0) board.frames[i] = frame; else board.frames.push(frame);
+      } else {
+        // An update arrives as a patch; untouched content keeps its identity so nothing re-decodes.
+        const i = board.frames.findIndex(f => f.id === event.id);
+        if (i < 0) {
+          gadget.getFrame(event.id).then(f => {
+            if (!f || board.frames.some(x => x.id === f.id)) return;
+            board.frames.push(f); renderFrame(f); renderFrameList();
+          }).catch(() => {});
+          return;
+        }
+        frame = { ...board.frames[i], ...(event.patch || {}) };
+        for (const k of event.unset || []) delete frame[k];
+        board.frames[i] = frame;
+      }
+      renderFrame(frame); renderFrameList();
+      if (frame.id === selectedFrameId) renderInspector();
+      if (composer && composer.frameId === frame.id) positionComposer();
+      return;
+    }
+    case "frameRemoved":
+      board.frames = board.frames.filter(f => f.id !== event.id);
+      board.comments = board.comments.filter(c => c.frameId !== event.id);
+      if (selectedFrameId === event.id) { selectedFrameId = null; selectedBlockId = null; }
+      if (composer?.frameId === event.id) closeComposer();
+      renderAllFrames(); renderFrameList(); renderInspector(); renderThreads(); return;
+    case "comment": {
+      const i = board.comments.findIndex(c => c.id === event.comment.id);
+      if (i >= 0) board.comments[i] = event.comment; else board.comments.push(event.comment);
+      const f = frameById(event.comment.frameId);
+      if (f) renderPins(f);
+      // A moved comment leaves pins behind on its old frame; cheap to refresh them all.
+      for (const other of board.frames) if (other !== f) renderPins(other);
+      renderThreads(); renderFrameList(); return;
+    }
+    case "commentRemoved":
+      board.comments = board.comments.filter(c => c.id !== event.id);
+      if (selectedCommentId === event.id) selectedCommentId = null;
+      for (const f of board.frames) renderPins(f);
+      renderThreads(); renderFrameList(); return;
+  }
+}
+
+/* A snapshot from subscribe() or getBoard() becomes the local board, undo flags included, so no
+ * caller re-applies part of it after events may already have moved on. */
+function adoptBoard(snapshot) {
+  board = snapshot;
+  if (snapshot.undo) { canUndo = !!snapshot.undo.canUndo; canRedo = !!snapshot.undo.canRedo; }
+}
+/* Registers a fresh subscriber and adopts its snapshot into `board` (replaying anything that
+ * arrived in between); returns the adopted board for convenience. */
 async function subscribe() {
-  const result = await gadget.subscribe(new Subscriber(), { clientId, id: me.id, name: me.name, color: me.color });
+  const subscriber = new Subscriber();
+  const result = await gadget.subscribe(subscriber, { clientId, id: me.id, name: me.name, color: me.color });
   subscription = { token: result.token };
-  return result.board;
+  subscriber.adopt(result.board);
+  return board;
 }
 
 /* The top-level `gadget` stub survives reconnects but our subscriber stub does not: ping the token
@@ -2004,7 +2030,7 @@ function startHeartbeat() {
     try {
       const alive = subscription && await gadget.ping(subscription.token);
       if (!alive) {
-        board = await subscribe();
+        await subscribe();
         renderEverything();
         toast("Reconnected.");
       }
@@ -2082,12 +2108,11 @@ if (isExport) {
   mountShell();
   await resolveIdentity();
   try {
-    board = await subscribe();
+    await subscribe();
   } catch (e) {
     console.error("subscribe failed", e);
-    try { board = await gadget.getBoard(); } catch {}
+    try { adoptBoard(await gadget.getBoard()); } catch {}
   }
-  if (board.undo) { canUndo = !!board.undo.canUndo; canRedo = !!board.undo.canRedo; }
   renderEverything();
   fitToView(board.frames);
   startHeartbeat();

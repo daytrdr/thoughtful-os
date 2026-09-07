@@ -85,6 +85,23 @@ test("generates the gatekeepers, the backend and the router, in first-deploy ord
   }
 });
 
+test("routerName renames the router alone, and the origin follows it", () => {
+  const named = withConfig({
+    routerName: "thoughtful-os",
+    publicBaseUrl: "https://thoughtful-os.example.workers.dev",
+  });
+  const configs = generateProdConfigs(named, PACKAGES);
+  assert.equal(configs.get("router")!.name, "thoughtful-os");
+  assert.equal(configs.get("workshop-backend")!.name, "thoughtful-workshop-backend");
+  assert.equal(configs.get("workshop-backend")!.vars!.PUBLIC_BASE_URL,
+    "https://thoughtful-os.example.workers.dev");
+  // The workers.dev check follows the override: the old prefixed hostname is now the wrong one.
+  assert.throws(() => validateConfig({ ...named, publicBaseUrl: BASE.publicBaseUrl }, PACKAGES),
+    /must be https:\/\/thoughtful-os\.<subdomain>\.workers\.dev/);
+  assert.throws(() => validateConfig(withConfig({ routerName: "Thoughtful OS" }), PACKAGES),
+    /routerName/);
+});
+
 test("the router is the only worker with a public hostname", () => {
   for (const [name, config] of generateProdConfigs(BASE, PACKAGES)) {
     const exposed = name === "router";

@@ -20,7 +20,7 @@ Two files in the repo carry the whole setup:
 | --- | --- | --- |
 | `thoughtful-gatekeeper-mcp` | `packages/gatekeeper-mcp` | MCP connector; the Figma bridge |
 | `thoughtful-workshop-backend` | `packages/workshop-backend` | The app: users, workspaces, agent |
-| `thoughtful-router` | `packages/router` | Public origin; serves the frontend, proxies `/api` and `/gatekeeper/*` |
+| `thoughtful-os` (`routerName`) | `packages/router` | Public origin; serves the frontend, proxies `/api` and `/gatekeeper/*` |
 
 Add a gatekeeper by listing its short name in `deployment.jsonc` and creating a project for it.
 
@@ -33,11 +33,15 @@ Add a gatekeeper by listing its short name in `deployment.jsonc` and creating a 
    Cloudflare GitHub app for the repository once.
 3. **Create the projects, in this order, waiting for each build to succeed:** gatekeepers, then
    `workshop-backend`, then `router`. A deploy fails when a service binding names a Worker that
-   does not exist yet; after the first pass the order no longer matters. For each project:
+   does not exist yet; after the first pass the order no longer matters. If the Workers were
+   first deployed from a laptop (`pnpm -w run deploy:build <package>` then
+   `wrangler deploy --config wrangler.prod.jsonc` in the package directory, with
+   `CLOUDFLARE_ACCOUNT_ID` set), connect each existing Worker instead: Workers & Pages → the
+   Worker → Settings → Builds → Connect. For each project:
 
    | Setting | Value |
    | --- | --- |
-   | Project name | The Worker name from `deployment.jsonc`, exactly (`namePrefix` + package name) |
+   | Project name | The Worker name from `deployment.jsonc`, exactly (`namePrefix` + package name; `routerName` for the router) |
    | Production branch | `main` |
    | Root directory | The package directory |
    | Build command | `pnpm -w run deploy:build <package>` with `router`, `workshop-backend` or `gatekeeper-<short>` |
@@ -48,7 +52,7 @@ Add a gatekeeper by listing its short name in `deployment.jsonc` and creating a 
    The project name must match the generated config's `name`; otherwise wrangler deploys a second
    Worker beside the connected one.
 4. **Hostname.** With `route.workersDev`, the router answers at
-   `https://<prefix>router.<subdomain>.workers.dev`; set `publicBaseUrl` to exactly that. With
+   `https://<routerName>.<subdomain>.workers.dev`; set `publicBaseUrl` to exactly that. With
    `route.customDomain`, the zone must be on the account and the router deploy registers the
    domain.
 5. **Sign in.** Open the site and create the three accounts. Usernames listed under `admins` get

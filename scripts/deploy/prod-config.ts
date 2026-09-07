@@ -55,6 +55,12 @@ export interface DeploymentConfig {
   route: RouterRoute;
   /** Prepended to each package name to form its Worker name. */
   namePrefix?: string;
+  /**
+   * The router's Worker name, when it should not be `namePrefix + "router"`. The router is the one
+   * Worker whose name is visible -- it is the workers.dev hostname -- so it is the one worth
+   * choosing; every other name only appears in bindings.
+   */
+  routerName?: string;
   /** Gatekeepers to deploy, by short name (`mcp` is `gatekeeper-mcp`). */
   gatekeepers: string[];
   /** Accounts given the Admin menu: usernames, or emails once an auth gatekeeper is listed. */
@@ -121,6 +127,7 @@ const BUCKET_NAME = /^[a-z0-9](?:[a-z0-9-]{1,61})[a-z0-9]$/;
 
 /** The Worker name a package deploys under. */
 export function workerName(config: DeploymentConfig, pkgName: string): string {
+  if (pkgName === ROUTER_PACKAGE && config.routerName) return config.routerName;
   return `${config.namePrefix ?? ""}${pkgName}`;
 }
 
@@ -166,6 +173,9 @@ export function validateConfig(
   const prefix = config.namePrefix ?? "";
   if (typeof prefix !== "string" || !/^[a-z0-9-]*$/.test(prefix)) {
     throw new Error("namePrefix must use lowercase letters, numbers and hyphens.");
+  }
+  if (config.routerName !== undefined && !WORKER_NAME.test(config.routerName)) {
+    throw new Error("routerName must be a legal Worker name: lowercase letters, numbers and hyphens.");
   }
   const routerName = workerName(config, ROUTER_PACKAGE);
   const backendName = workerName(config, BACKEND_PACKAGE);

@@ -17,10 +17,14 @@
   // zone on the same Cloudflare account; the router deploy registers it.
   "route": { "workersDev": true },
 
-  // Prepended to every package name to form the Worker name: `thoughtful-router`,
-  // `thoughtful-workshop-backend`, `thoughtful-gatekeeper-mcp`. Each Workers Builds project must
-  // be created under exactly that name.
+  // Prepended to every package name to form the Worker name: `thoughtful-workshop-backend`,
+  // `thoughtful-gatekeeper-mcp`. Each Workers Builds project must be created under exactly that
+  // name.
   "namePrefix": "thoughtful-",
+
+  // The router's own name, which is also its workers.dev hostname. Without it the router would be
+  // `thoughtful-router`.
+  "routerName": "thoughtful-os",
 
   // Gatekeeper Workers to deploy and bind, by short name (`mcp` is packages/gatekeeper-mcp).
   // `mcp` carries the Figma MCP bridge. Add `google` here (and under auth.gatekeepers) to offer
@@ -29,7 +33,7 @@
 
   // Accounts that get the Admin menu. With password sign-in these are usernames (lowercase
   // letters, digits and underscores); with gatekeeper sign-in they are the verified emails.
-  "admins": ["<admin-username>"],
+  "admins": ["daytrdr"],
 
   // Sign-in. Empty `gatekeepers` means the app's own username/password accounts, which is what
   // this deployment uses while the studio is being tested. `disablePasswordAuth` only takes

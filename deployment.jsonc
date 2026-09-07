@@ -11,7 +11,7 @@
   // The router's origin. OAuth redirect URIs and absolute links are built from it, so it must be
   // exactly the hostname the router answers on: `https://<router name>.<subdomain>.workers.dev`
   // for a workers.dev route, or `https://<customDomain>` for a custom domain.
-  "publicBaseUrl": "https://thoughtful-router.daytrdr.workers.dev",
+  "publicBaseUrl": "https://thoughtful-os.daytrdr.workers.dev",
 
   // Exactly one of `workersDev: true` or `customDomain: "<hostname>"`. A custom domain needs its
   // zone on the same Cloudflare account; the router deploy registers it.

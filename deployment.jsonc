@@ -39,8 +39,8 @@
   // Storage the backend binds. Create the two KV namespaces and the R2 bucket once in the
   // Cloudflare dashboard and paste the ids here.
   "resources": {
-    "blueprintsKvNamespaceId": "<blueprints-kv-namespace-id>",
-    "avatarsKvNamespaceId": "<avatars-kv-namespace-id>",
+    "blueprintsKvNamespaceId": "7f1e252164d34617a35f798669d7973f",
+    "avatarsKvNamespaceId": "bcc84b8c3e6d4678864b6f0ad4a0c6c4",
     "blueprintContentBucket": "thoughtful-blueprint-content"
     // Gatekeepers with KV of their own (gatekeeper-context) take their ids here, keyed by binding:
     // "gatekeeperKvNamespaceIds": { "CONTEXT_COLLECTIONS": "<id>" }
